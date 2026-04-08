@@ -20,10 +20,9 @@ from openkb.schema import AGENTS_MD
 load_dotenv()
 
 
-def _setup_llm_key(config: dict) -> None:
-    """Set LiteLLM API key from the configured env var (default: LLM_API_KEY)."""
-    env_var = config.get("api_key_env", DEFAULT_CONFIG["api_key_env"])
-    api_key = os.environ.get(env_var, "")
+def _setup_llm_key() -> None:
+    """Set LiteLLM API key from LLM_API_KEY env var if present."""
+    api_key = os.environ.get("LLM_API_KEY", "")
     if api_key:
         litellm.api_key = api_key
 
@@ -55,8 +54,8 @@ def _display_type(raw_type: str) -> str:
 # ---------------------------------------------------------------------------
 
 def _find_kb_dir() -> Path | None:
-    """Return the knowledge-base root if .okb/ exists in cwd, else None."""
-    candidate = Path(".okb")
+    """Return the knowledge-base root if .openkb/ exists in cwd, else None."""
+    candidate = Path(".openkb")
     if candidate.exists() and candidate.is_dir():
         return Path(".")
     return None
@@ -74,11 +73,11 @@ def _add_single_file(file_path: Path, kb_dir: Path) -> None:
     from openkb.agent.compiler import compile_long_doc, compile_short_doc
     from openkb.state import HashRegistry
 
-    okb_dir = kb_dir / ".okb"
-    config = load_config(okb_dir / "config.yaml")
-    _setup_llm_key(config)
+    openkb_dir = kb_dir / ".openkb"
+    config = load_config(openkb_dir / "config.yaml")
+    _setup_llm_key()
     model: str = config.get("model", DEFAULT_CONFIG["model"])
-    registry = HashRegistry(okb_dir / "hashes.json")
+    registry = HashRegistry(openkb_dir / "hashes.json")
 
     # 2. Convert document
     click.echo(f"Adding: {file_path.name}")
@@ -154,25 +153,22 @@ def cli():
 @cli.command()
 def init():
     """Initialise a new knowledge base in the current directory."""
-    okb_dir = Path(".okb")
-    if okb_dir.exists():
+    openkb_dir = Path(".openkb")
+    if openkb_dir.exists():
         click.echo("Knowledge base already initialized.")
         return
 
     # Interactive prompts
-    model = click.prompt("Model", default=DEFAULT_CONFIG["model"])
-    api_key_env = click.prompt("API key env var", default=DEFAULT_CONFIG["api_key_env"])
+    model = click.prompt(
+        "Model (e.g. gpt-5.4, anthropic/claude-sonnet-4-6, gemini/gemini-3.1-pro-preview)",
+        default=DEFAULT_CONFIG["model"],
+    )
     language = click.prompt("Language", default=DEFAULT_CONFIG["language"])
     pageindex_threshold = click.prompt(
         "PageIndex threshold (pages)",
         default=DEFAULT_CONFIG["pageindex_threshold"],
         type=int,
     )
-    pageindex_api_key_env = click.prompt(
-        "PageIndex cloud API key env var (leave empty for local)",
-        default=DEFAULT_CONFIG["pageindex_api_key_env"],
-    )
-
     # Create directory structure
     Path("raw").mkdir(exist_ok=True)
     Path("wiki/sources/images").mkdir(parents=True, exist_ok=True)
@@ -189,17 +185,15 @@ def init():
     )
     Path("wiki/log.md").write_text("# Operations Log\n\n", encoding="utf-8")
 
-    # Create .okb/ state directory
-    okb_dir.mkdir()
+    # Create .openkb/ state directory
+    openkb_dir.mkdir()
     config = {
         "model": model,
-        "api_key_env": api_key_env,
         "language": language,
         "pageindex_threshold": pageindex_threshold,
-        "pageindex_api_key_env": pageindex_api_key_env,
     }
-    save_config(okb_dir / "config.yaml", config)
-    (okb_dir / "hashes.json").write_text(json.dumps({}), encoding="utf-8")
+    save_config(openkb_dir / "config.yaml", config)
+    (openkb_dir / "hashes.json").write_text(json.dumps({}), encoding="utf-8")
 
     click.echo("Knowledge base initialised.")
 
@@ -210,7 +204,7 @@ def add(path):
     """Add a document or directory of documents at PATH to the knowledge base."""
     kb_dir = _find_kb_dir()
     if kb_dir is None:
-        click.echo("No knowledge base found. Run `okb init` first.")
+        click.echo("No knowledge base found. Run `openkb init` first.")
         return
 
     target = Path(path)
@@ -248,14 +242,14 @@ def query(question, save):
     """Query the knowledge base with QUESTION."""
     kb_dir = _find_kb_dir()
     if kb_dir is None:
-        click.echo("No knowledge base found. Run `okb init` first.")
+        click.echo("No knowledge base found. Run `openkb init` first.")
         return
 
     from openkb.agent.query import run_query
 
-    okb_dir = kb_dir / ".okb"
-    config = load_config(okb_dir / "config.yaml")
-    _setup_llm_key(config)
+    openkb_dir = kb_dir / ".openkb"
+    config = load_config(openkb_dir / "config.yaml")
+    _setup_llm_key()
     model: str = config.get("model", DEFAULT_CONFIG["model"])
 
     try:
@@ -283,7 +277,7 @@ def watch():
     """Watch the raw/ directory for new documents and process them automatically."""
     kb_dir = _find_kb_dir()
     if kb_dir is None:
-        click.echo("No knowledge base found. Run `okb init` first.")
+        click.echo("No knowledge base found. Run `openkb init` first.")
         return
 
     from openkb.watcher import watch_directory
@@ -312,15 +306,15 @@ def lint(fix):
     """Lint the knowledge base for structural and semantic inconsistencies."""
     kb_dir = _find_kb_dir()
     if kb_dir is None:
-        click.echo("No knowledge base found. Run `okb init` first.")
+        click.echo("No knowledge base found. Run `openkb init` first.")
         return
 
     from openkb.lint import run_structural_lint
     from openkb.agent.linter import run_knowledge_lint
 
-    okb_dir = kb_dir / ".okb"
-    config = load_config(okb_dir / "config.yaml")
-    _setup_llm_key(config)
+    openkb_dir = kb_dir / ".openkb"
+    config = load_config(openkb_dir / "config.yaml")
+    _setup_llm_key()
     model: str = config.get("model", DEFAULT_CONFIG["model"])
 
     # Structural lint
@@ -353,11 +347,11 @@ def list_cmd():
     """List all documents in the knowledge base."""
     kb_dir = _find_kb_dir()
     if kb_dir is None:
-        click.echo("No knowledge base found. Run `okb init` first.")
+        click.echo("No knowledge base found. Run `openkb init` first.")
         return
 
-    okb_dir = kb_dir / ".okb"
-    hashes_file = okb_dir / "hashes.json"
+    openkb_dir = kb_dir / ".openkb"
+    hashes_file = openkb_dir / "hashes.json"
     if not hashes_file.exists():
         click.echo("No documents indexed yet.")
         return
@@ -413,7 +407,7 @@ def status():
     """Show the current status of the knowledge base."""
     kb_dir = _find_kb_dir()
     if kb_dir is None:
-        click.echo("No knowledge base found. Run `okb init` first.")
+        click.echo("No knowledge base found. Run `openkb init` first.")
         return
 
     wiki_dir = kb_dir / "wiki"
@@ -438,8 +432,8 @@ def status():
         click.echo(f"  {'raw':<20} {raw_count:<10}")
 
     # Hash registry summary
-    okb_dir = kb_dir / ".okb"
-    hashes_file = okb_dir / "hashes.json"
+    openkb_dir = kb_dir / ".openkb"
+    hashes_file = openkb_dir / "hashes.json"
     if hashes_file.exists():
         hashes = json.loads(hashes_file.read_text(encoding="utf-8"))
         click.echo(f"\n  Total indexed: {len(hashes)} document(s)")
