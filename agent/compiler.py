@@ -102,11 +102,14 @@ def build_compiler_agent(wiki_root: str, model: str, language: str = "en") -> Ag
         """
         return write_wiki_file(path, content, wiki_root)
 
+    from agents.model_settings import ModelSettings
+
     return Agent(
         name="wiki-compiler",
         instructions=instructions,
         tools=[list_files, read_file, write_file],
         model=model,
+        model_settings=ModelSettings(parallel_tool_calls=False),
     )
 
 
@@ -127,7 +130,8 @@ def build_long_doc_compiler_agent(wiki_root: str, kb_dir: str, model: str, langu
     okb_dir = Path(kb_dir) / ".okb"
     config = load_config(okb_dir / "config.yaml")
     _model = config.get("model", model)
-    pi_api_key = os.environ.get(config.get("pageindex_api_key_env", ""), "")
+    pi_key_env = config.get("pageindex_api_key_env", "") or "PAGEINDEX_API_KEY"
+    pi_api_key = os.environ.get(pi_key_env, "")
     client = PageIndexClient(
         api_key=pi_api_key or None,
         model=_model,
@@ -185,11 +189,14 @@ def build_long_doc_compiler_agent(wiki_root: str, kb_dir: str, model: str, langu
             parts.append(f"[Page {page_num}]\n{text}")
         return "\n\n".join(parts)
 
+    from agents.model_settings import ModelSettings
+
     return Agent(
         name="wiki-compiler",
         instructions=instructions,
         tools=[list_files, read_file, write_file, get_page_content],
-        model=model,
+        model=_model,
+        model_settings=ModelSettings(parallel_tool_calls=False),
     )
 
 

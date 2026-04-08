@@ -33,26 +33,63 @@ information, say so clearly.
 def _pageindex_retrieve_impl(doc_id: str, question: str, okb_dir: str, model: str) -> str:
     """Retrieve relevant content from a long document via PageIndex.
 
-    Args:
-        doc_id: PageIndex document identifier.
-        question: The user's question.
-        okb_dir: Path to the .okb/ state directory.
-        model: LLM model to use for relevance selection.
-
-    Returns:
-        Formatted string with retrieved page content.
+    For cloud-indexed docs: delegates to col.query() directly.
+    For local docs: uses structure-based page selection + get_page_content.
     """
     from openkb.config import load_config
     config = load_config(Path(okb_dir) / "config.yaml")
-    pi_api_key = os.environ.get(config.get("pageindex_api_key_env", ""), "")
-    client = PageIndexClient(
-        api_key=pi_api_key or None,
-        model=model,
-        storage_path=okb_dir,
-    )
+    pi_key_env = config.get("pageindex_api_key_env", "") or "PAGEINDEX_API_KEY"
+    pi_api_key = os.environ.get(pi_key_env, "")
+    # Determine if this doc was cloud-indexed (cloud doc_ids have "pi-" prefix)
+    is_cloud_doc = doc_id.startswith("pi-")
+
+    if is_cloud_doc:
+        # Cloud doc: use PageIndex streaming query (avoids timeout, shows progress)
+        import sys
+        import asyncio
+        import threading
+
+        client = PageIndexClient(api_key=pi_api_key or None, model=model)
+        col = client.collection()
+        try:
+            stream = col.query(question, doc_ids=[doc_id], stream=True)
+            collected: list[str] = []
+            done = threading.Event()
+
+            async def _consume():
+                try:
+                    async for event in stream:
+                        if event.type == "answer_delta":
+                            sys.stdout.write(event.data)
+                            sys.stdout.flush()
+                            collected.append(event.data)
+                        elif event.type == "tool_call":
+                            name = event.data.get("name", "")
+                            args = event.data.get("args", "")
+                            sys.stdout.write(f"\n  [PageIndex] {name}({args})\n")
+                            sys.stdout.flush()
+                    sys.stdout.write("\n")
+                    sys.stdout.flush()
+                finally:
+                    done.set()
+
+            # Run streaming in a separate thread with its own event loop
+            def _run():
+                loop = asyncio.new_event_loop()
+                loop.run_until_complete(_consume())
+                loop.close()
+
+            t = threading.Thread(target=_run, daemon=True)
+            t.start()
+            t.join(timeout=120)
+            return "".join(collected) if collected else "No answer from PageIndex."
+        except Exception as exc:
+            return f"Error querying cloud PageIndex: {exc}"
+
+    # Local doc: use local PageIndex with structure-based retrieval
+    client = PageIndexClient(model=model, storage_path=okb_dir)
     col = client.collection()
 
-    # 1. Get document structure
     try:
         structure = col.get_document_structure(doc_id)
     except Exception as exc:
@@ -60,8 +97,6 @@ def _pageindex_retrieve_impl(doc_id: str, question: str, okb_dir: str, model: st
 
     if not structure:
         return "No structure found for document."
-
-    # Build a text summary of sections for the LLM
     sections = []
     for idx, node in enumerate(structure):
         title = node.get("title", f"Section {idx + 1}")
@@ -160,25 +195,32 @@ def build_query_agent(wiki_root: str, okb_dir: str, model: str, language: str = 
         """
         return _pageindex_retrieve_impl(doc_id, question, okb_dir, model)
 
+    from agents.model_settings import ModelSettings
+
     return Agent(
         name="wiki-query",
         instructions=instructions,
         tools=[list_files, read_file, pageindex_retrieve],
         model=model,
+        model_settings=ModelSettings(parallel_tool_calls=False),
     )
 
 
-async def run_query(question: str, kb_dir: Path, model: str) -> str:
+async def run_query(question: str, kb_dir: Path, model: str, stream: bool = False) -> str:
     """Run a Q&A query against the knowledge base.
 
     Args:
         question: The user's question.
         kb_dir: Root of the knowledge base.
         model: LLM model name.
+        stream: If True, print response tokens to stdout as they arrive.
 
     Returns:
         The agent's final answer as a string.
     """
+    import sys
+    from agents import RawResponsesStreamEvent, RunItemStreamEvent, ItemHelpers
+    from openai.types.responses import ResponseTextDeltaEvent
     from openkb.config import load_config
 
     okb_dir = kb_dir / ".okb"
@@ -189,5 +231,33 @@ async def run_query(question: str, kb_dir: Path, model: str) -> str:
     okb_path = str(okb_dir)
 
     agent = build_query_agent(wiki_root, okb_path, model, language=language)
-    result = await Runner.run(agent, question)
-    return result.final_output or ""
+
+    if not stream:
+        result = await Runner.run(agent, question)
+        return result.final_output or ""
+
+    result = Runner.run_streamed(agent, question)
+    collected = []
+    async for event in result.stream_events():
+        if isinstance(event, RawResponsesStreamEvent):
+            if isinstance(event.data, ResponseTextDeltaEvent):
+                text = event.data.delta
+                if text:
+                    sys.stdout.write(text)
+                    sys.stdout.flush()
+                    collected.append(text)
+        elif isinstance(event, RunItemStreamEvent):
+            item = event.item
+            if item.type == "tool_call_item":
+                raw = item.raw_item
+                args = getattr(raw, "arguments", "{}")
+                sys.stdout.write(f"\n[tool call] {raw.name}({args})\n")
+                sys.stdout.flush()
+            elif item.type == "tool_call_output_item":
+                output = str(item.output)
+                preview = output[:200] + "..." if len(output) > 200 else output
+                sys.stdout.write(f"[tool output] {preview}\n\n")
+                sys.stdout.flush()
+    sys.stdout.write("\n")
+    sys.stdout.flush()
+    return "".join(collected) if collected else result.final_output or ""

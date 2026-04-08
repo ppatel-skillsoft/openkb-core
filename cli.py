@@ -152,9 +152,13 @@ def init():
     api_key_env = click.prompt("API key env var", default=DEFAULT_CONFIG["api_key_env"])
     language = click.prompt("Language", default=DEFAULT_CONFIG["language"])
     pageindex_threshold = click.prompt(
-        "PageIndex threshold",
+        "PageIndex threshold (pages)",
         default=DEFAULT_CONFIG["pageindex_threshold"],
         type=int,
+    )
+    pageindex_api_key_env = click.prompt(
+        "PageIndex cloud API key env var (leave empty for local)",
+        default=DEFAULT_CONFIG["pageindex_api_key_env"],
     )
 
     # Create directory structure
@@ -180,6 +184,7 @@ def init():
         "api_key_env": api_key_env,
         "language": language,
         "pageindex_threshold": pageindex_threshold,
+        "pageindex_api_key_env": pageindex_api_key_env,
     }
     save_config(okb_dir / "config.yaml", config)
     (okb_dir / "hashes.json").write_text(json.dumps({}), encoding="utf-8")
@@ -241,8 +246,7 @@ def query(question, save):
     model: str = config.get("model", DEFAULT_CONFIG["model"])
 
     try:
-        answer = asyncio.run(run_query(question, kb_dir, model))
-        click.echo(answer)
+        answer = asyncio.run(run_query(question, kb_dir, model, stream=True))
     except Exception as exc:
         click.echo(f"[ERROR] Query failed: {exc}")
         return
@@ -355,14 +359,32 @@ def list_cmd():
         pages_str = str(pages) if pages else ""
         click.echo(f"  {name:<40} {display:<12} {pages_str:<8}")
 
+    # Display summaries
+    summaries_dir = kb_dir / "wiki" / "summaries"
+    if summaries_dir.exists():
+        summaries = sorted(p.stem for p in summaries_dir.glob("*.md"))
+        if summaries:
+            click.echo(f"\nSummaries ({len(summaries)}):")
+            for s in summaries:
+                click.echo(f"  - {s}")
+
     # Display concepts
     concepts_dir = kb_dir / "wiki" / "concepts"
     if concepts_dir.exists():
         concepts = sorted(p.stem for p in concepts_dir.glob("*.md"))
         if concepts:
-            click.echo("\nConcepts:")
+            click.echo(f"\nConcepts ({len(concepts)}):")
             for c in concepts:
                 click.echo(f"  - {c}")
+
+    # Display reports
+    reports_dir = kb_dir / "wiki" / "reports"
+    if reports_dir.exists():
+        reports = sorted(p.name for p in reports_dir.glob("*.md"))
+        if reports:
+            click.echo(f"\nReports ({len(reports)}):")
+            for r in reports:
+                click.echo(f"  - {r}")
 
 
 @cli.command()
