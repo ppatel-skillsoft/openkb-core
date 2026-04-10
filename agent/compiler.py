@@ -643,16 +643,18 @@ async def _compile_concepts(
                 continue
             name, page_content, is_update, brief = r
             _write_concept(wiki_dir, name, page_content, source_file, is_update, brief=brief)
-            concept_names.append(name)
+            safe_name = _sanitize_concept_name(name)
+            concept_names.append(safe_name)
             if brief:
-                concept_briefs_map[name] = brief
+                concept_briefs_map[safe_name] = brief
 
     # --- Step 3b: Process related items (code only, no LLM) ---
-    for slug in related_items:
+    sanitized_related = [_sanitize_concept_name(s) for s in related_items]
+    for slug in sanitized_related:
         _add_related_link(wiki_dir, slug, doc_name, source_file)
 
     # --- Step 3c: Backlink — summary ↔ concepts (code only) ---
-    all_concept_slugs = concept_names + [s for s in related_items]
+    all_concept_slugs = concept_names + sanitized_related
     if all_concept_slugs:
         _backlink_summary(wiki_dir, doc_name, all_concept_slugs)
         _backlink_concepts(wiki_dir, doc_name, all_concept_slugs)
