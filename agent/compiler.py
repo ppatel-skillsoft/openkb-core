@@ -284,6 +284,55 @@ def _read_concept_briefs(wiki_dir: Path) -> str:
     return "\n".join(lines) or "(none yet)"
 
 
+def _get_section_bounds(lines: list[str], heading: str) -> tuple[int, int] | None:
+    """Return the [start, end) bounds for a Markdown H2 section."""
+    for i, line in enumerate(lines):
+        if line == heading:
+            start = i + 1
+            end = len(lines)
+            for j in range(start, len(lines)):
+                if lines[j].startswith("## "):
+                    end = j
+                    break
+            return start, end
+    return None
+
+
+def _section_contains_link(lines: list[str], heading: str, link: str) -> bool:
+    """Check whether a wikilink already exists inside the named section."""
+    bounds = _get_section_bounds(lines, heading)
+    if bounds is None:
+        return False
+
+    start, end = bounds
+    return any(link in line for line in lines[start:end])
+
+
+def _replace_section_entry(lines: list[str], heading: str, link: str, entry: str) -> bool:
+    """Replace the first matching entry within a specific section."""
+    bounds = _get_section_bounds(lines, heading)
+    if bounds is None:
+        return False
+
+    start, end = bounds
+    for i in range(start, end):
+        if link in lines[i]:
+            lines[i] = entry
+            return True
+    return False
+
+
+def _insert_section_entry(lines: list[str], heading: str, entry: str) -> bool:
+    """Insert a new entry at the top of a specific section."""
+    bounds = _get_section_bounds(lines, heading)
+    if bounds is None:
+        return False
+
+    start, _ = bounds
+    lines.insert(start, entry)
+    return True
+
+
 
 def _write_summary(wiki_dir: Path, doc_name: str, summary: str,
                     doc_type: str = "short") -> None:
@@ -469,8 +518,9 @@ def _update_index(
     """Append document and concept entries to index.md.
 
     When ``doc_brief`` or entries in ``concept_briefs`` are provided, entries
-    are written as ``- [[link]] (type) — brief text``.  Existing entries are
-    detected by the link part only and skipped to avoid duplicates.
+    are written as ``- [[link]] (type) — brief text``. Existing entries are
+    detected within their own section by the link part only and skipped to
+    avoid duplicates.
     ``doc_type`` is ``"short"`` or ``"pageindex"`` — shown in the entry so the
     query agent knows how to access detailed content.
     """
@@ -485,32 +535,27 @@ def _update_index(
         )
 
     text = index_path.read_text(encoding="utf-8")
+    lines = text.split("\n")
 
     doc_link = f"[[summaries/{doc_name}]]"
-    if doc_link not in text:
+    if not _section_contains_link(lines, "## Documents", doc_link):
         doc_entry = f"- {doc_link} ({doc_type})"
         if doc_brief:
             doc_entry += f" — {doc_brief}"
-        if "## Documents" in text:
-            text = text.replace("## Documents\n", f"## Documents\n{doc_entry}\n", 1)
+        _insert_section_entry(lines, "## Documents", doc_entry)
 
     for name in concept_names:
         concept_link = f"[[concepts/{name}]]"
         concept_entry = f"- {concept_link}"
         if name in concept_briefs:
             concept_entry += f" — {concept_briefs[name]}"
-        if concept_link in text:
+        if _section_contains_link(lines, "## Concepts", concept_link):
             if name in concept_briefs:
-                lines = text.split("\n")
-                for i, line in enumerate(lines):
-                    if concept_link in line:
-                        lines[i] = concept_entry
-                        break
-                text = "\n".join(lines)
+                _replace_section_entry(lines, "## Concepts", concept_link, concept_entry)
         else:
-            if "## Concepts" in text:
-                text = text.replace("## Concepts\n", f"## Concepts\n{concept_entry}\n", 1)
+            _insert_section_entry(lines, "## Concepts", concept_entry)
 
+    text = "\n".join(lines)
     index_path.write_text(text, encoding="utf-8")
 
 
