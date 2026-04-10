@@ -494,10 +494,18 @@ def _update_index(
 
     for name in concept_names:
         concept_link = f"[[concepts/{name}]]"
-        if concept_link not in text:
-            concept_entry = f"- {concept_link}"
+        concept_entry = f"- {concept_link}"
+        if name in concept_briefs:
+            concept_entry += f" — {concept_briefs[name]}"
+        if concept_link in text:
             if name in concept_briefs:
-                concept_entry += f" — {concept_briefs[name]}"
+                lines = text.split("\n")
+                for i, line in enumerate(lines):
+                    if concept_link in line:
+                        lines[i] = concept_entry
+                        break
+                text = "\n".join(lines)
+        else:
             if "## Concepts" in text:
                 text = text.replace("## Concepts\n", f"## Concepts\n{concept_entry}\n", 1)
 
