@@ -1,9 +1,10 @@
 """Chat session persistence for `openkb chat`.
 
-Each session lives in ``<kb>/.openkb/chats/<id>.json`` and stores the full
+Each session lives in ``<kb>/.openkb/chats/<id>.json`` and stores a sanitized
 agent-SDK history (from ``RunResult.to_input_list()``) alongside the user
 messages and full assistant replies kept as plain strings for display and
-export.
+export. Large tool-returned image payloads are replaced with lightweight
+references before the history is reused or persisted.
 """
 from __future__ import annotations
 
@@ -15,6 +16,11 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+
+
+_IMAGE_HISTORY_NOTE = (
+    "Image output omitted from chat history to avoid persisting raw data URLs."
+)
 
 
 def _utcnow_iso() -> str:
@@ -36,6 +42,71 @@ def _title_from(msg: str, limit: int = 60) -> str:
     if len(msg) <= limit:
         return msg
     return msg[: limit - 1] + "\u2026"
+
+
+def _image_history_placeholder(image_path: str | None) -> dict[str, str]:
+    text = _IMAGE_HISTORY_NOTE
+    if image_path:
+        text += f" Source path: {image_path}."
+    text += " Call get_image again if you need to inspect it."
+    return {"type": "input_text", "text": text}
+
+
+def _extract_get_image_path(item: dict[str, Any]) -> str | None:
+    if item.get("type") != "function_call" or item.get("name") != "get_image":
+        return None
+    arguments = item.get("arguments")
+    if not isinstance(arguments, str):
+        return None
+    try:
+        payload = json.loads(arguments)
+    except json.JSONDecodeError:
+        return None
+    image_path = payload.get("image_path")
+    if isinstance(image_path, str) and image_path:
+        return image_path
+    return None
+
+
+def _sanitize_history_value(value: Any, image_path: str | None = None) -> Any:
+    if isinstance(value, list):
+        return [_sanitize_history_value(item, image_path) for item in value]
+    if not isinstance(value, dict):
+        return value
+
+    if value.get("type") == "input_image":
+        image_url = value.get("image_url")
+        if isinstance(image_url, str) and image_url.startswith("data:"):
+            return _image_history_placeholder(image_path)
+
+    return {
+        key: _sanitize_history_value(item, image_path)
+        for key, item in value.items()
+    }
+
+
+def sanitize_history(history: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Strip large image payloads from model history while keeping a re-fetch hint."""
+    image_paths_by_call_id: dict[str, str] = {}
+    sanitized: list[dict[str, Any]] = []
+
+    for item in history:
+        if not isinstance(item, dict):
+            sanitized.append(item)
+            continue
+
+        image_path = _extract_get_image_path(item)
+        call_id = item.get("call_id")
+        if image_path and isinstance(call_id, str):
+            image_paths_by_call_id[call_id] = image_path
+
+        history_image_path = None
+        if item.get("type") == "function_call_output" and isinstance(call_id, str):
+            history_image_path = image_paths_by_call_id.get(call_id)
+
+        sanitized.append(_sanitize_history_value(item, history_image_path))
+
+    return sanitized
 
 
 @dataclass
@@ -99,7 +170,7 @@ class ChatSession:
         assistant_text: str,
         new_history: list[dict[str, Any]],
     ) -> None:
-        self.history = new_history
+        self.history = sanitize_history(new_history)
         self.user_turns.append(user_message)
         self.assistant_texts.append(assistant_text)
         self.turn_count = len(self.user_turns)
@@ -120,7 +191,7 @@ def load_session(kb_dir: Path, session_id: str) -> ChatSession:
         language=data.get("language", "en"),
         title=data.get("title", ""),
         turn_count=data.get("turn_count", 0),
-        history=data.get("history", []),
+        history=sanitize_history(data.get("history", [])),
         user_turns=data.get("user_turns", []),
         assistant_texts=data.get("assistant_texts", []),
         path=path,
