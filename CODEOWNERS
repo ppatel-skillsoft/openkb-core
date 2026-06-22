@@ -1,0 +1,24 @@
+# CODEOWNERS — openkb-core
+# Documents which files are owned by upstream (VectifyAI/OpenKB) vs our additions.
+#
+# UPSTREAM-OWNED files (expect merge conflicts during upstream sync):
+#   cli.py, config.py, converter.py, indexer.py, locks.py, schema.py,
+#   state.py, url_ingest.py, watcher.py, frontmatter.py, images.py,
+#   lint.py, log.py, tree_renderer.py
+#   agent/, deck/, prompts/, skill/
+#
+# OUR ADDITIONS (no upstream conflicts expected):
+#   api/        — FastAPI HTTP wrapper (openkb serve)
+#   storage/    — StorageBackend abstraction
+#   services/   — Service layer
+#   db/         — Database migrations (partially shared with upstream db/)
+#
+# See docs/UPSTREAM_SYNC.md for the sync workflow.
+
+# Default owner for everything
+* @ppatel-skillsoft
+
+# Our additions — reviewed by us only
+/api/ @ppatel-skillsoft
+/storage/ @ppatel-skillsoft
+/services/ @ppatel-skillsoft
